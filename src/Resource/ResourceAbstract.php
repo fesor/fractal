@@ -55,6 +55,12 @@ abstract class ResourceAbstract implements ResourceInterface
         $this->data = $data;
         $this->transformer = $transformer;
         $this->resourceKey = $resourceKey;
+
+        if (null === $this->transformer) {
+            $this->transformer = function ($data) {
+                return $data;
+            };
+        }
     }
 
     /**
