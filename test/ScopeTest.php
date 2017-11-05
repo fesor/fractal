@@ -228,14 +228,12 @@ class ScopeTest extends TestCase
         $manager->parseIncludes('book,price');
 
         $transformer = Mockery::mock('League\Fractal\TransformerAbstract')->makePartial();
-        $transformer->shouldReceive('getAvailableIncludes')->twice()->andReturn(['book']);
+        $transformer->shouldReceive('getAvailableIncludes')->twice()->andReturn(['book', 'price']);
         $transformer->shouldReceive('transform')->once()->andReturnUsing(function (array $data) {
             return $data;
         });
-        $transformer
-            ->shouldReceive('processIncludedResources')
-            ->once()
-            ->andReturn(['book' => ['yin' => 'yang'], 'price' => 99]);
+        $transformer->shouldReceive('includeBook')->once()->andReturn(new Primitive(['yin' => 'yang']));
+        $transformer->shouldReceive('includePrice')->once()->andReturn(new Primitive(99));
 
         $resource = new Item(['bar' => 'baz'], $transformer);
 
@@ -278,7 +276,7 @@ class ScopeTest extends TestCase
         $transformer->shouldReceive('transform')->once()->andReturnUsing(function (array $data) {
             return $data;
         });
-        $transformer->shouldReceive('processIncludedResources')->once()->andReturn(['book' => ['yin' => 'yang']]);
+        $transformer->shouldReceive('includeBook')->once()->andReturn(new Primitive(['yin' => 'yang']));
 
         $resource = new Item(['bar' => 'baz'], $transformer);
 
@@ -629,7 +627,7 @@ class ScopeTest extends TestCase
      */
     public function testToArrayWithIncludesAndFieldsets($fieldsetsToParse, $expected)
     {
-        $transformer = $this->createTransformerWithIncludedResource('book', ['book' => ['yin' => 'yang']]);
+        $transformer = $this->createTransformerWithIncludedResource('book', ['yin' => 'yang']);
 
         $resource = new Item(
             ['foo' => 'bar', 'baz' => 'qux'],
@@ -685,7 +683,7 @@ class ScopeTest extends TestCase
         $manager->parseIncludes('book');
         $manager->setSerializer($serializer);
 
-        $transformer = $this->createTransformerWithIncludedResource('book', ['book' => ['yin' => 'yang']]);
+        $transformer = $this->createTransformerWithIncludedResource('book', ['yin' => 'yang']);
 
         $resource = new Item(['foo' => 'bar'], $transformer, 'resourceName');
         $scope = new Scope($manager, $resource);
@@ -710,6 +708,248 @@ class ScopeTest extends TestCase
         ];
     }
 
+    public function testProcessEmbeddedResourcesNoAvailableOrDefaultIncludes()
+    {
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract')->makePartial();
+        $transformer->shouldNotReceive('includeFoo');
+        $transformer->shouldReceive('transform')->zeroOrMoreTimes()->andReturnUsing(function ($data) {
+            return $data;
+        });
+
+        $manager = new Manager();
+        $manager->parseIncludes('foo');
+
+        $resource = new Item(['some' => 'data'], $transformer);
+
+        $scope = new Scope($manager, $resource);
+        $scope->toArray();
+    }
+
+    /**
+     * @expectedException \BadMethodCallException
+     */
+    public function testProcessEmbeddedResourcesInvalidAvailableEmbed()
+    {
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract')->makePartial();
+
+        $manager = new Manager();
+        $manager->parseIncludes('book');
+
+        $scope = new Scope($manager, Mockery::mock('League\Fractal\Resource\ResourceAbstract'));
+        $transformer->setCurrentScope($scope);
+
+        $transformer->setAvailableIncludes(['book']);
+        $scope->toArray();
+    }
+    /**
+     * @expectedException \BadMethodCallException
+     */
+    public function testProcessEmbeddedResourcesInvalidDefaultEmbed()
+    {
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract')->makePartial();
+
+        $manager = new Manager();
+        $manager->parseIncludes('book');
+
+        $scope = new Scope($manager, Mockery::mock('League\Fractal\Resource\ResourceAbstract'));
+        $transformer->setCurrentScope($scope);
+
+        $transformer->setDefaultIncludes(['book']);
+        $scope->toArray();
+    }
+
+    public function testProcessIncludedAvailableResources()
+    {
+        $manager = new Manager();
+        $manager->parseIncludes('book');
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+        $transformer->shouldReceive('includeBook')->once()->andReturnUsing(function ($data) {
+            return new Item(['included' => 'thing'], function ($data) {
+                return $data;
+            });
+        });
+
+        $transformer->setAvailableIncludes(['book', 'publisher']);
+        $scope = new Scope($manager, new Item([], $transformer));
+        $this->assertSame(['data' => ['book' => ['data' => ['included' => 'thing']]]], $scope->toArray());
+    }
+
+    public function testProcessExcludedAvailableResources()
+    {
+        $manager = new Manager();
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+        $scope = new Scope($manager, new Item([], $transformer));
+
+        $transformer->shouldReceive('includeBook')->never();
+
+        $transformer->shouldReceive('includePublisher')->once()->andReturnUsing(function ($data) {
+            return new Item(['another' => 'thing'], function ($data) {
+                return $data;
+            });
+        });
+
+        // available includes that have been requested are excluded
+        $manager->parseIncludes('book,publisher');
+        $manager->parseExcludes('book');
+
+        $transformer->setAvailableIncludes(['book', 'publisher']);
+
+        $this->assertSame(['data' => ['publisher' => ['data' => ['another' => 'thing']]]], $scope->toArray());
+    }
+
+    public function testProcessExcludedDefaultResources()
+    {
+        $manager = new Manager();
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+        $scope = new Scope($manager, new Item([], $transformer));
+
+        $transformer->shouldReceive('includeBook')->never();
+
+        $transformer->shouldReceive('includePublisher')->once()->andReturnUsing(function ($data) {
+            return new Item(['another' => 'thing'], function ($data) {
+                return $data;
+            });
+        });
+
+        $manager->parseIncludes('book,publisher');
+        $manager->parseExcludes('book');
+
+        $transformer->setDefaultIncludes(['book', 'publisher']);
+
+        $this->assertSame(['data' => ['publisher' => ['data' => ['another' => 'thing']]]], $scope->toArray());
+    }
+
+    public function testProcessIncludedAvailableResourcesEmptyEmbed()
+    {
+        $manager = new Manager();
+        $manager->parseIncludes(['book']);
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+
+        $transformer->shouldReceive('includeBook')->once()->andReturn(null);
+
+        $transformer->setAvailableIncludes(['book']);
+        $scope = new Scope($manager, new Item([], $transformer));
+
+        $this->assertEquals(['data' => []], $scope->toArray());
+    }
+
+    /**
+     * @expectedException \Exception
+     * @expectedExceptionMessage Invalid return value from League\Fractal\TransformerAbstract::includeBook().
+     */
+    public function testCallEmbedMethodReturnsCrap()
+    {
+        $manager = new Manager();
+        $manager->parseIncludes('book');
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+
+        $transformer->shouldReceive('includeBook')->once()->andReturn(new \stdClass());
+
+        $transformer->setAvailableIncludes(['book']);
+        $scope = new Scope($manager, new Item([], $transformer));
+        $scope->toArray();
+    }
+
+    /**
+     * @covers \League\Fractal\TransformerAbstract::processIncludedResources
+     * @covers \League\Fractal\TransformerAbstract::callIncludeMethod
+     */
+    public function testProcessEmbeddedDefaultResources()
+    {
+        $manager = new Manager();
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+
+        $transformer->shouldReceive('includeBook')->once()->andReturnUsing(function ($data) {
+            return new Item(['included' => 'thing'], function ($data) {
+                return $data;
+            });
+        });
+
+        $transformer->setDefaultIncludes(['book']);
+        $scope = new Scope($manager, new Item([], $transformer));
+        $this->assertSame(['data' => ['book' => ['data' => ['included' => 'thing']]]], $scope->toArray());
+    }
+
+    /**
+     * @covers \League\Fractal\TransformerAbstract::processIncludedResources
+     * @covers \League\Fractal\TransformerAbstract::callIncludeMethod
+     */
+    public function testIncludedItem()
+    {
+        $manager = new Manager();
+        $manager->parseIncludes('book');
+
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+        $transformer->shouldReceive('includeBook')->once()->andReturnUsing(function ($data) {
+            return new Item(['included' => 'thing'], function ($data) {
+                return $data;
+            });
+        });
+
+        $transformer->setAvailableIncludes(['book']);
+        $scope = new Scope($manager, new Item([], $transformer));
+        $this->assertSame(['data' => ['book' => ['data' => ['included' => 'thing']]]], $scope->toArray());
+    }
+
+    public function testParamBagIsProvidedForIncludes()
+    {
+        $manager = new Manager();
+        $manager->parseIncludes('book:foo(bar)');
+
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract')->makePartial();
+        $transformer->shouldReceive('transform')->andReturn([]);
+
+        $transformer->shouldReceive('includeBook')
+            ->with(Mockery::any(), Mockery::type('\League\Fractal\ParamBag'))
+            ->once();
+
+        $transformer->setAvailableIncludes(['book']);
+        $scope = new Scope($manager, new Item([], $transformer));
+        $data = $scope->toArray();
+    }
+
+    public function testIncludedCollection()
+    {
+        $manager = new Manager();
+        $manager->parseIncludes('book');
+
+        $collectionData = [
+            ['included' => 'thing'],
+            ['another' => 'thing'],
+        ];
+
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+        $transformer->shouldReceive('includeBook')->once()->andReturnUsing(function ($data) use ($collectionData) {
+            return new Collection($collectionData, function ($data) {
+                return $data;
+            });
+        });
+
+        $transformer->setAvailableIncludes(['book']);
+        $scope = new Scope($manager, new Item([0], $transformer));
+        $this->assertSame(['data' => ['book' => ['data' => $collectionData]]], $scope->toArray());
+    }
+
+    public function testProcessEmbeddedDefaultResourcesEmptyEmbed()
+    {
+        $transformer = Mockery::mock('League\Fractal\TransformerAbstract[transform]');
+        $transformer->shouldReceive('transform')->andReturn([]);
+        $transformer->shouldReceive('includeBook')->once()->andReturn(null);
+
+        $transformer->setDefaultIncludes(['book']);
+        $scope = new Scope(new Manager(), new Item([], $transformer));
+
+        $this->assertEquals(['data' => []], $scope->toArray());
+    }
+
     public function tearDown()
     {
         Mockery::close();
@@ -724,7 +964,7 @@ class ScopeTest extends TestCase
                 return $data;
             }
         );
-        $transformer->shouldReceive('processIncludedResources')->once()->andReturn($transformResult);
+        $transformer->shouldReceive('include' . ucfirst(strtolower($resourceName)))->once()->andReturn(new Primitive($transformResult));
         return $transformer;
     }
 }

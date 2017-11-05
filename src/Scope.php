@@ -29,11 +29,6 @@ use League\Fractal\Serializer\SerializerAbstract;
 class Scope
 {
     /**
-     * @var array
-     */
-    protected $availableIncludes = [];
-
-    /**
      * @var string
      */
     protected $scopeIdentifier;
@@ -430,9 +425,50 @@ class Scope
      */
     protected function fireIncludedTransformers($transformer, $data)
     {
-        $this->availableIncludes = $transformer->getAvailableIncludes();
+        return $this->processIncludedResources($transformer, $data) ?: [];
+    }
 
-        return $transformer->processIncludedResources($this, $data) ?: [];
+    private function processIncludedResources($transformer, $data)
+    {
+        $includedData = [];
+
+        $includes = $this->figureOutWhichIncludes($transformer);
+
+        foreach ($includes as $include) {
+            $includedData = $this->includeResourceIfAvailable(
+                $transformer,
+                $data,
+                $includedData,
+                $include
+            );
+        }
+
+        return $includedData === [] ? false : $includedData;
+    }
+
+    /**
+     * @param \League\Fractal\TransformerAbstract $transformer
+     * @param mixed                               $data
+     *
+     * @return array
+     */
+    public function figureOutWhichIncludes($transformer)
+    {
+        $includes = $transformer->getDefaultIncludes();
+
+        foreach ($transformer->getAvailableIncludes() as $include) {
+            if ($this->isRequested($include)) {
+                $includes[] = $include;
+            }
+        }
+
+        foreach ($includes as $include) {
+            if ($this->isExcluded($include)) {
+                $includes = array_diff($includes, [$include]);
+            }
+        }
+
+        return $includes;
     }
 
     /**
@@ -527,5 +563,47 @@ class Scope
     protected function getResourceType()
     {
         return $this->resource->getResourceKey();
+    }
+
+    private function includeResourceIfAvailable($transformer, $data, $includedData, $include)
+    {
+        if ($resource = $this->callIncludeMethod($transformer, $include, $data)) {
+            $childScope = $this->embedChildScope($include, $resource);
+
+            if ($childScope->getResource() instanceof Primitive) {
+                $includedData[$include] = $childScope->transformPrimitiveResource();
+            } else {
+                $includedData[$include] = $childScope->toArray();
+            }
+        }
+
+        return $includedData;
+    }
+
+    private function callIncludeMethod($transformer, $includeName, $data)
+    {
+        $scopeIdentifier = $this->getIdentifier($includeName);
+        $params = $this->manager->getIncludeParams($scopeIdentifier);
+
+        // Check if the method name actually exists
+        $methodName = 'include'.str_replace(' ', '', ucwords(str_replace('_', ' ', str_replace('-', ' ', $includeName))));
+
+        $resource = call_user_func([$transformer, $methodName], $data, $params);
+
+        if ($resource === null) {
+            return false;
+        }
+
+        if (! $resource instanceof ResourceInterface) {
+            throw new \Exception(sprintf(
+                'Invalid return value from %s::%s(). Expected %s, received %s.',
+                TransformerAbstract::class,
+                $methodName,
+                'League\Fractal\Resource\ResourceInterface',
+                is_object($resource) ? get_class($resource) : gettype($resource)
+            ));
+        }
+
+        return $resource;
     }
 }
